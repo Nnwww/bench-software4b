@@ -87,14 +87,9 @@
          (jansi-clj.core/yellow
           (str (split-class-name-from-fqcn fqcn) "(Class not found)")))))
 
-(defn reflect-instance-or-err-str [class]
-  (try (.newInstance class)
-       (catch java.lang.ReflectiveOperationException e
-         (jansi-clj.core/yellow
-          (str (split-class-name-from-fqcn (str class)) "(Can't instantiate)")))))
-
-(defn instantiate-for-name [fqcn]
-  "Instantiate from the FQCN name. This function return a reflected instance or an error string."
+(defn test-class [fqcn]
+  "Instantiate from the FQCN name.
+  This function return a testing result with reflected instance or an error string."
   (let [class-or-str (reflect-class-or-err-str fqcn)]
       (if (string? class-or-str)
         class-or-str
@@ -104,8 +99,8 @@
   (let [package-name-prefix (str "s4." (.getName user-path-obj) ".")]
     (->> (:names env)
          (map #(str package-name-prefix %))
-         (map #(instantiate-for-name %))
-         (map #()))))
+         (map #(reflect-class-or-err-str %))
+         (map #(test-class %)))))
 ;;手前の関数をテストしてここから再開、TestSoftware的なjavaファイルを作り投げ込むコードをかく。
 ;; このためにはテストスイート公開用のjavaファイルの位置とか、来週までの隠し場所とかを奥本君と相談する必要がある
 ;; テストスイートは失敗時に例外を投げて貰うと良さそう
