@@ -6,7 +6,7 @@
   :dependencies [[org.clojure/clojure "1.9.0"]
                  [jansi-clj "0.1.1"]
                  ]
-  :source-paths ["/Users/nnwww/WorkSpace/tut2017informationQuantity/"]
+  :java-source-paths ["/Users/nnwww/WorkSpace/software_correct/tut2017informationQuantity/"]
   :main ^:skip-aot bench-software4b.core
   :target-path "target/%s"
   :profiles {:uberjar {:aot :all}})
