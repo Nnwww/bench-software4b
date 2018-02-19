@@ -5,25 +5,42 @@
             [clojure.string :as cstr]
             [clojure.spec.alpha :as s]
             [jansi-clj.core])
-  (:import [java.nio.file.Files]
-           [java.nio.file.Paths]
-           [java.io.File]
-           [s4.t000002 TestCase2])
+  (:import [java.nio.file Files]
+           [java.nio.file Paths]
+           [java.io File]
+           [s4.t000002 TestCase2]
+           [java.lang ReflectiveOperationException])
   (:gen-class))
+
+(defmacro with-timeout [millis & body]
+  `(let [future# (future ~@body)]
+     (try
+       (.get future# ~millis java.util.concurrent.TimeUnit/MILLISECONDS)
+       (catch java.util.concurrent.TimeoutException x#
+         (do
+           (future-cancel future#)
+           nil)))))
+
+(defn slurp-bytes
+  "Slurp the bytes from a slurpable thing"
+  [x]
+  (with-open [out (java.io.ByteArrayOutputStream.)]
+    (clojure.java.io/copy (clojure.java.io/input-stream x) out)
+    (.toByteArray out)))
 
 (assert (-> (shell/sh "type" "git") :exit (= 0))  "Pre check error: not found git")
 (assert (-> (shell/sh "type" "javac") :exit (= 0)) "Pre check error: not found javac")
 (assert (-> (shell/sh "type" "java") :exit (= 0)) "Pre check error: not found java")
 
-(def user-cd-path (System/getProperty "user.home"))
+(def user-cd-path (str (System/getProperty "user.dir") "/"))
 
 (defn get-canonical-path [^String path]
   {:pre [nil? path]}
-  (cond-> path (.startsWith path "~") (.replaceFirst "~" user-cd-path)))
+  (cond-> path (.startsWith path "~") (.replaceFirst "~" (System/getProperty "user.home"))))
 
 ;; classpathは末尾バックスラッシュ必要
 ;; Fileオブジェクトは削ってしまうので注意
-(def stab-compilable-user-path (io/file (get-canonical-path "~/WorkSpace/software_correct/tut2017informationQuantity/s4/b141837")))
+(def stab-compilable-user-path (io/file (get-canonical-path "~/WorkSpace/software_correct/tut2017informationQuantity/s4/t000002")))
 (def stab-compilable-classpath (get-canonical-path "~/WorkSpace/software_correct/tut2017informationQuantity/"))
 
 (def compile-names ["Frequencer" "InformationEstimator"])
@@ -34,7 +51,17 @@
                               (assoc %1 (nth compile-names %2)))
                         {} (range (count compile-names))))
 
-(def stab-env {:names compile-names :classpath stab-compilable-classpath})
+(def bench-names
+  [["space_100b.txt" "target_10b.txt"]
+   ["space_1k.txt" "target_100b.txt"]
+   ;;   ["space_1m.txt" "target_10k.txt"]
+   ])
+
+(def bench-suite (reduce #(assoc %1 %2 (slurp-bytes (io/resource %2)))
+                         {} (flatten bench-names)))
+
+(defrecord Env [names classpath build test bench])
+(def stab-env (Env. compile-names stab-compilable-classpath true true true))
 
 (defn ret-assert [x message ret]
   (do (assert x message) ret))
@@ -65,7 +92,6 @@
 
 (defn cmd-java [compile-path]
   (shell/sh "java" compile-path "-classpath" "."))
-
 
 (defn extract-students-folder [files]
   (filter #(and (.isDirectory %)
@@ -100,6 +126,17 @@
          (jansi-clj.core/yellow
           (str (split-class-name-from-fqcn fqcn) "(Class not found)")))))
 
+(defn reflect-instance-or-err-str [class]
+  (try (.newInstance class)
+       (catch java.lang.ReflectiveOperationException e
+         (jansi-clj.core/yellow
+          (str (split-class-name-from-fqcn (str class)) "(Can't instantiate)")))))
+
+(defn instantiate-for-fqcn [fqcn]
+  (let [class (reflect-class-or-err-str fqcn)]
+    (if (string? class) class
+        (reflect-instance-or-err-str class))))
+
 (defn test-a-set [class test-kind test-set]
   (try (do (test-set class)
            (jansi-clj.core/green test-kind))
@@ -115,8 +152,10 @@
 (defn pairing-name-and-class [name fqcn]
   [name (reflect-class-or-err-str fqcn)])
 
+(defn make-package-prefix [user-path-obj] (str "s4." (.getName user-path-obj) "."))
+
 (defn test-user [env user-path-obj]
-  (let [package-name-prefix (str "s4." (.getName user-path-obj) ".")
+  (let [package-name-prefix (make-package-prefix user-path-obj)
         fqcns (map #(str package-name-prefix %) (:names env))]
     (->> (:names env)
          (#(map vector % fqcns))
@@ -145,25 +184,57 @@
         (throw (Exception. (str "Illegal Work Directory Error: This program works in git directories. "
                                 "Please cd or specify a git project by args.")))))))
 
+(defn bench-time-sandbox [fqcn space-file target-file]
+  (with-timeout 600000
+    (let [start (System/currentTimeMillis)
+          bench-obj (instantiate-for-fqcn fqcn)]
+      (do (.setSpace bench-obj (bench-suite space-file))
+          (.setTarget bench-obj (bench-suite target-file))
+          (if (< 0 (.estimation bench-obj))
+            (- (System/currentTimeMillis) start))))))
+
+(defn bench-set [fqcn space-file target-file]
+  (let [result (try (bench-time-sandbox fqcn space-file target-file)
+                    (catch Exception e nil))]
+    (if (nil? result)
+      (map jansi-clj.core/red (vector space-file target-file "Time out or execution failure ..."))
+      (map jansi-clj.core/green (vector space-file target-file (str result "(msec)"))))))
+
+(defn bench-user [env user-path-obj]
+  (let [package-name-prefix (make-package-prefix user-path-obj)
+        fqcn (str package-name-prefix ((:names env) 1))
+        pre-bench-obj (instantiate-for-fqcn fqcn)]
+    (if (string? pre-bench-obj) pre-bench-obj
+        (map #(bench-set fqcn (% 0) (% 1)) bench-names))))
+
 (defn evaluate-user [env user-path-obj]
   (do (println (.getName user-path-obj))
-      (println (str "build: " (apply print-str (build-user env user-path-obj))))
-      (println (str "tests: " (apply print-str (test-user env user-path-obj))))
-      (println (str "bench: " ))
+      (when (:build env) (println (str "build: " (apply print-str (build-user env user-path-obj)))))
+      (when (:test  env) (println (str "test : " (apply print-str (test-user env user-path-obj)))))
+      (when (:bench env) (println (str "bench: \n"
+                                       (reduce #(str %1 "\n" %2)
+                                               (map #(apply print-str %) (bench-user env user-path-obj))))))
       (print "\n")))
+
+(def cl (ClassLoader/getSystemClassLoader))
 
 (defn -main
   "I don't do a whole lot ... yet."
   [& args]
+  (println user-cd-path)
+  (println (reduce #(str %1 "\n" %2) (.getURLs cl)))
   (println (jansi-clj.core/green  "The green string indicates success."))
   (println (jansi-clj.core/red    "The red string indicates failure."))
   (println (jansi-clj.core/yellow "The yellow string indicates the absence of class files. Please consult with TA."))
   (print "\n")
-  (let [classpath (init-work-dir (first args))]
+  (let [classpath (init-work-dir (first args))
+        flag-build (= -1 (.indexOf args "build"))
+        flag-test (= -1 (.indexOf args "test"))
+        flag-bench (= -1 (.indexOf args "bench"))
+        workflow-env (Env. compile-names classpath flag-build flag-test flag-bench)]
     (doall
      (->> (str classpath "s4")
           io/file
           file-seq
           extract-students-folder
-          (map #(evaluate-user
-                 {:names compile-names :classpath classpath} %))))))
+          (map #(evaluate-user workflow-env %))))))
